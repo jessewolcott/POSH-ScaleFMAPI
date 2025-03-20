@@ -1,4 +1,66 @@
-# ScaleComputingAPI.psm1
+# ScaleFMAPI.psm1
+<#
+.SYNOPSIS
+    PowerShell module for securely interacting with Scale Computing's FleetManager REST API.
+
+.DESCRIPTION
+    The ScaleFMAPI module provides a secure and convenient way to interact with Scale Computing's
+    REST API. This module allows administrators to query and manage Scale Computing clusters without
+    embedding API keys directly into scripts.
+    
+    Key features:
+    - Secure API key management with encrypted storage
+    - Functions to retrieve information about clusters and VMs
+    - Detailed filtering capabilities
+    - Comprehensive logging system
+    - User-friendly output formatting
+
+.NOTES
+    Version      : 1.0.0
+    Author       : Jesse Wolcott
+    License      : None
+    Requires     : PowerShell 5.1 or higher
+    Dependencies : None
+
+.EXAMPLE
+    # Import the module
+    Import-Module .\ScaleFMAPI.psm1
+    
+    # Register an API key
+    Register-ScaleApiKey -Role "Admin" -ApiKey "your-api-key-here"
+    
+    # Get information about your clusters
+    $clusters = Get-ScaleComputingClusters -ApiKeyName "Admin"
+    $clusters | Format-Table -AutoSize
+
+.EXAMPLE
+    # Get all VMs with at least 8GB RAM
+    $highMemVMs = Get-ScaleVMs -ApiKeyName "Admin" -MinRAMGB 8 -PowerState "Running"
+    $highMemVMs | Format-Table "VM Name","RAM (GB)","Host Node IP" -AutoSize
+
+.LINK
+    https://api.scalecomputing.com/api/v2/
+    https://github.com/jessewolcott/POSH-ScaleFMAPI
+    
+.ROLE
+    System Administrator
+    
+.FUNCTIONALITY
+    The ScaleFMAPI module provides the following key functionality:
+    
+    1. API Key Management:
+       - Register-ScaleApiKey: Securely store API keys
+       - Get-ScaleAvailableApiKeys: List registered API keys
+       - Remove-ScaleApiKey: Remove API keys
+    
+    2. API Configuration:
+       - Set-ScaleApiEndpoint: Configure the API endpoint URL
+       - Get-ScaleApiEndpoint: Retrieve current endpoint configuration
+    
+    3. Data Retrieval:
+       - Get-ScaleComputingClusters: Get cluster information
+       - Get-ScaleVMs: Get virtual machine information with detailed filtering
+#>
 
 # Module-level variables
 $script:HCOSGA = '9.4.27.217089'
