@@ -389,7 +389,200 @@ function Get-ScaleComputingClusters {
         return $null
     }
 }
-
+function Get-ScaleVMs {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$ApiKeyName,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$VMName,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Description,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("Running", "Powered Off", "Unknown", "")]
+        [string]$PowerState,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Tag,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MinDriveCapacityGB,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MaxDriveCapacityGB,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MinDriveFreeSpaceGB,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MinDrivePercentage,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MaxDrivePercentage,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MinRAMGB,
+        
+        [Parameter(Mandatory = $false)]
+        [decimal]$MaxRAMGB,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$VMOS_IP,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$HostNodeIP,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$ClusterName,
+        
+        [Parameter(Mandatory = $false)]
+        [DateTime]$CreatedAfter,
+        
+        [Parameter(Mandatory = $false)]
+        [DateTime]$CreatedBefore,
+        
+        [Parameter(Mandatory = $false)]
+        [DateTime]$UpdatedAfter,
+        
+        [Parameter(Mandatory = $false)]
+        [DateTime]$UpdatedBefore,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$Limit = 500,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$Offset = 0,
+        
+        [Parameter(Mandatory = $false)]
+        [bool]$EnableLogging = $false
+    )
+    
+    # Set logging state
+    $script:EnableLogging = $EnableLogging
+    
+    # Build API URL for VMs endpoint
+    $vmsUrl = "$script:ApiEndpoint/vms?offset=$Offset&limit=$Limit"
+    
+    try {
+        # Get API key from stored credentials
+        $apiKey = Get-ScaleApiKey -Name $ApiKeyName
+        
+        $headers = @{
+            "accept" = "application/json"
+            "api-key" = $apiKey
+        }
+        
+        Write-ScaleLog -Message "Requesting VMs data from: $vmsUrl" -Level 'Info'
+        $response = Invoke-RestMethod -Uri $vmsUrl -Headers $headers -Method Get
+        Write-ScaleLog -Message "Retrieved $(($response.items).Count) VMs successfully" -Level 'Info'
+        
+        # Process the response to extract the needed information
+        $results = foreach ($item in $response.items) {
+            $powerState = switch ($item.state) {
+                "1" { "Running" }
+                "0" { "Powered Off" }
+                default { "Unknown" }
+            }
+            
+            $driveCapacityGB = [Math]::Round(($item.driveCapacity / 1024 / 1024 / 1024), 2)
+            $driveAllocationGB = [Math]::Round(($item.driveAllocation / 1024 / 1024 / 1024), 2)
+            $driveFreeSpaceGB = $driveCapacityGB - $driveAllocationGB
+            $drivePercentage = if ($driveCapacityGB -gt 0) { 
+                ($driveAllocationGB / $driveCapacityGB) * 100
+            } else { 
+                0 
+            }
+            $ramGB = [Math]::Round(($item.memory / 1024 / 1024 / 1024), 2)
+            
+            # Create VM object
+            $vmObj = [PSCustomObject]@{
+                "VM Name"                  = $item.name
+                "Description"              = $item.description
+                "Power State"              = $powerState
+                "Tags"                     = $item.tags
+                "Drive Total Capacity (GB)" = $driveCapacityGB
+                "Drive Free Space (GB)"    = $driveFreeSpaceGB
+                "Drive Percentage (%)"     = $drivePercentage
+                "RAM (GB)"                 = $ramGB
+                "VM OS IPs"                = $item.ips
+                "Host Node IP"             = $item.nodeIp
+                "Cluster Name"             = ($item.cluster).name
+                "VM Created"               = $item.createdAt
+                "VM Updated"               = $item.updatedAt
+            }
+            
+            $vmObj
+        }
+        
+        # Apply filters
+        if (-not [string]::IsNullOrEmpty($VMName)) {
+            $results = $results | Where-Object { $_."VM Name" -like "*$VMName*" }
+        }
+        if (-not [string]::IsNullOrEmpty($Description)) {
+            $results = $results | Where-Object { $_."Description" -like "*$Description*" }
+        }
+        if (-not [string]::IsNullOrEmpty($PowerState)) {
+            $results = $results | Where-Object { $_."Power State" -eq $PowerState }
+        }
+        if (-not [string]::IsNullOrEmpty($Tag)) {
+            $results = $results | Where-Object { $null -ne $_.Tags -and $_.Tags -contains $Tag }
+        }
+        if ($MinDriveCapacityGB -gt 0) {
+            $results = $results | Where-Object { $_."Drive Total Capacity (GB)" -ge $MinDriveCapacityGB }
+        }
+        if ($MaxDriveCapacityGB -gt 0) {
+            $results = $results | Where-Object { $_."Drive Total Capacity (GB)" -le $MaxDriveCapacityGB }
+        }
+        if ($MinDriveFreeSpaceGB -gt 0) {
+            $results = $results | Where-Object { $_."Drive Free Space (GB)" -ge $MinDriveFreeSpaceGB }
+        }
+        if ($MinDrivePercentage -gt 0) {
+            $results = $results | Where-Object { $_."Drive Percentage (%)" -ge $MinDrivePercentage }
+        }
+        if ($MaxDrivePercentage -gt 0) {
+            $results = $results | Where-Object { $_."Drive Percentage (%)" -le $MaxDrivePercentage }
+        }
+        if ($MinRAMGB -gt 0) {
+            $results = $results | Where-Object { $_."RAM (GB)" -ge $MinRAMGB }
+        }
+        if ($MaxRAMGB -gt 0) {
+            $results = $results | Where-Object { $_."RAM (GB)" -le $MaxRAMGB }
+        }
+        if (-not [string]::IsNullOrEmpty($VMOS_IP)) {
+            $results = $results | Where-Object { $null -ne $_."VM OS IPs" -and $_."VM OS IPs" -contains $VMOS_IP }
+        }
+        if (-not [string]::IsNullOrEmpty($HostNodeIP)) {
+            $results = $results | Where-Object { $_."Host Node IP" -eq $HostNodeIP }
+        }
+        if (-not [string]::IsNullOrEmpty($ClusterName)) {
+            $results = $results | Where-Object { $_."Cluster Name" -like "*$ClusterName*" }
+        }
+        if ($CreatedAfter) {
+            $results = $results | Where-Object { $_."VM Created" -gt $CreatedAfter }
+        }
+        if ($CreatedBefore) {
+            $results = $results | Where-Object { $_."VM Created" -lt $CreatedBefore }
+        }
+        if ($UpdatedAfter) {
+            $results = $results | Where-Object { $_."VM Updated" -gt $UpdatedAfter }
+        }
+        if ($UpdatedBefore) {
+            $results = $results | Where-Object { $_."VM Updated" -lt $UpdatedBefore }
+        }
+        
+        Write-ScaleLog -Message "Returned $($results.Count) VMs after filtering" -Level 'Info'
+        return $results
+    }
+    catch {
+        $errorMessage = "Failed to retrieve Scale Computing VMs: $_"
+        Write-ScaleLog -Message $errorMessage -Level 'Error'
+        Write-Error $errorMessage
+        return $null
+    }
+}
 # Initialize module on import
 Initialize-ScaleEnvironment
 

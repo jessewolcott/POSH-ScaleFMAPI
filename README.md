@@ -89,6 +89,30 @@ Get-ScaleComputingClusters -ApiKeyName "MyRole" -Limit 100 -EnableLogging $true
 * -Offset: Offset for pagination (default: 0)
 * -EnableLogging: Enable or disable logging ($true or $false)
 
+### Get-ScaleVMs
+Retrieves detailed information about virtual machines across your environment. The filtering portion of the API is seemingly not yet integrated, so filtering is accomplished in Powershell on the returned objects.
+```powershell
+Get-ScaleVMs -ApiKeyName "MyRole" -PowerState "Running" -MinRAMGB 4 -Limit 100 -EnableLogging $true
+```
+#### Parameters:
+* ApiKeyName: Name of a previously registered API key (required)
+* VMName: Filter by VM name (supports wildcards)
+* Description: Filter by VM description (supports wildcards)
+* PowerState: Filter by power state ("Running", "Powered Off", or "Unknown")
+* Tag: Filter VMs that have a specific tag
+* MinDriveCapacityGB/-MaxDriveCapacityGB: Filter by drive capacity range
+* MinDriveFreeSpaceGB: Filter VMs with at least this much free disk space
+* MinDrivePercentage/-MaxDrivePercentage: Filter by drive usage percentage
+* MinRAMGB/-MaxRAMGB: Filter by RAM allocation range
+* VMOS_IP: Filter by specific VM IP address
+* HostNodeIP: Filter by host node IP address
+* ClusterName: Filter by cluster name
+* CreatedAfter/-CreatedBefore: Filter by VM creation date range
+* UpdatedAfter/-UpdatedBefore: Filter by VM update date range
+* Limit: Maximum number of VMs to retrieve (default: 500)
+* Offset: Offset for pagination (default: 0)
+* EnableLogging: Enable or disable logging ($true or $false)
+
 # Security
 This module implements several security best practices:
 * No hardcoded API keys: All API keys must be registered by the user
@@ -131,3 +155,7 @@ Contributions to this module are welcome. Please ensure any modifications mainta
 1. Add more error handling
 1. `Get-ScaleComputingClusters` has an update checker, but its not working because I need to figure out how to poll the API for latest available build. 
 1. Set-ScaleApiEndpoint needs to store the parameter in a permanent way
+1. Get-ScaleVMs may not work, but I'm not sure if thats me or the API. More testing needed.
+1. Does `/api/v2/organization-activities` work?
+1. Does `/api/v2/conditions` work?
+1. What the heck do we do with `/api/v2/metrics`?
