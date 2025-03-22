@@ -2,95 +2,47 @@
 <#
 .SYNOPSIS
     PowerShell module for securely interacting with Scale Computing's FleetManager REST API.
-
-.DESCRIPTION
-    The ScaleFMAPI module provides a secure and convenient way to interact with Scale Computing's
-    REST API. This module allows administrators to query and manage Scale Computing clusters without
-    embedding API keys directly into scripts.
-    
-    Key features:
-    - Secure API key management with encrypted storage
-    - Functions to retrieve information about clusters and VMs
-    - Detailed filtering capabilities
-    - Comprehensive logging system
-    - User-friendly output formatting
-
-.NOTES
-    Version      : 1.0.0
-    Author       : Jesse Wolcott
-    License      : None
-    Requires     : PowerShell 5.1 or higher
-    Dependencies : None
-
-.EXAMPLE
-    # Import the module
-    Import-Module .\ScaleFMAPI.psm1
-    
-    # Register an API key
-    Register-ScaleApiKey -Role "Admin" -ApiKey "your-api-key-here"
-    
-    # Get information about your clusters
-    $clusters = Get-ScaleComputingClusters -ApiKeyName "Admin"
-    $clusters | Format-Table -AutoSize
-
-.EXAMPLE
-    # Get all VMs with at least 8GB RAM
-    $highMemVMs = Get-ScaleVMs -ApiKeyName "Admin" -MinRAMGB 8 -PowerState "Running"
-    $highMemVMs | Format-Table "VM Name","RAM (GB)","Host Node IP" -AutoSize
-
-.LINK
-    https://api.scalecomputing.com/api/v2/
-    https://github.com/jessewolcott/POSH-ScaleFMAPI
-    
-.ROLE
-    System Administrator
-    
-.FUNCTIONALITY
-    The ScaleFMAPI module provides the following key functionality:
-    
-    1. API Key Management:
-       - Register-ScaleApiKey: Securely store API keys
-       - Get-ScaleAvailableApiKeys: List registered API keys
-       - Remove-ScaleApiKey: Remove API keys
-    
-    2. API Configuration:
-       - Set-ScaleApiEndpoint: Configure the API endpoint URL
-       - Get-ScaleApiEndpoint: Retrieve current endpoint configuration
-    
-    3. Data Retrieval:
-       - Get-ScaleComputingClusters: Get cluster information
-       - Get-ScaleVMs: Get virtual machine information with detailed filtering
 #>
 
 # Module-level variables
 $script:HCOSGA = '9.4.27.217089'
 $script:ApiEndpoint = 'https://api.scalecomputing.com/api/v2'
-$script:CredentialFolder = Join-Path -Path $PSScriptRoot -ChildPath "Credentials"
-$script:EnableLogging = $false
+$script:EnableLogging = $true
+$script:ApiKeys = @{}
 
-function Initialize-ScaleEnvironment {
+# Function to reliably determine script directory across PS versions and contexts
+function Get-ScaleModuleRoot {
     [CmdletBinding()]
     param()
     
-    # Create credentials folder if it doesn't exist
-    if (-not (Test-Path -Path $script:CredentialFolder)) {
-        New-Item -Path $script:CredentialFolder -ItemType Directory | Out-Null
-        Write-ScaleLog -Message "Created credentials directory: $($script:CredentialFolder)" -Level 'Info'
+    # First try using $PSScriptRoot which exists in PS 3.0+
+    if ($PSScriptRoot) {
+        return $PSScriptRoot
     }
     
-    # Create logs folder if it doesn't exist
-    $logDirectory = Join-Path -Path $PSScriptRoot -ChildPath "Logs"
-    if (-not (Test-Path -Path $logDirectory)) {
-        New-Item -Path $logDirectory -ItemType Directory | Out-Null
+    # For modules, try using the module path
+    if ($ExecutionContext.SessionState.Module.Path) {
+        return Split-Path -Parent -Path $ExecutionContext.SessionState.Module.Path
     }
     
-    # Load any existing credential files into memory
-    $credFiles = Get-ChildItem -Path $script:CredentialFolder -Filter "*.cred" -ErrorAction SilentlyContinue
-    foreach ($file in $credFiles) {
-        $roleName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-        $script:ApiKeys[$roleName] = $file.FullName
+    # Try using $MyInvocation which might work in some contexts
+    if ($MyInvocation.MyCommand.Path) {
+        return Split-Path -Parent -Path $MyInvocation.MyCommand.Path
     }
+    
+    # As a last resort when code is run interactively (like in VSCode snippets)
+    if (Test-Path -Path $MyInvocation.PSScriptRoot) {
+        return $MyInvocation.PSScriptRoot
+    }
+    
+    # Absolute fallback - use current location (less reliable but better than nothing)
+    Write-Warning "Unable to determine module path accurately, using current location"
+    return $PWD.Path
 }
+
+# Initialize paths using our safe directory detection function
+$script:ModuleRoot = Get-ScaleModuleRoot
+$script:CredentialFolder = Join-Path -Path $script:ModuleRoot -ChildPath "Credentials"
 
 function Write-ScaleLog {
     [CmdletBinding()]
@@ -107,7 +59,7 @@ function Write-ScaleLog {
         return
     }
     
-    $logDirectory = Join-Path -Path $PSScriptRoot -ChildPath "Logs"
+    $logDirectory = Join-Path -Path $script:ModuleRoot -ChildPath "Logs"
     
     if (-not (Test-Path -Path $logDirectory)) {
         New-Item -Path $logDirectory -ItemType Directory | Out-Null
@@ -120,6 +72,41 @@ function Write-ScaleLog {
     Add-Content -Path $logFile -Value $logEntry
 }
 
+function Initialize-ScaleEnvironment {
+    [CmdletBinding()]
+    param()
+    
+    # Ensure module root is set
+    if (-not $script:ModuleRoot) {
+        $script:ModuleRoot = Get-ScaleModuleRoot
+    }
+    
+    # Create credentials folder if it doesn't exist
+    if (-not (Test-Path -Path $script:CredentialFolder)) {
+        New-Item -Path $script:CredentialFolder -ItemType Directory | Out-Null
+        Write-ScaleLog -Message "Created credentials directory: $($script:CredentialFolder)" -Level 'Info'
+    }
+    
+    # Create logs folder if it doesn't exist
+    $logDirectory = Join-Path -Path $script:ModuleRoot -ChildPath "Logs"
+    if (-not (Test-Path -Path $logDirectory)) {
+        New-Item -Path $logDirectory -ItemType Directory | Out-Null
+    }
+    
+    # Ensure ApiKeys dictionary is initialized
+    if ($null -eq $script:ApiKeys) {
+        $script:ApiKeys = @{}
+    }
+    
+    # Load any existing credential files into memory
+    $credFiles = Get-ChildItem -Path $script:CredentialFolder -Filter "*.cred" -ErrorAction SilentlyContinue
+    foreach ($file in $credFiles) {
+        $roleName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $script:ApiKeys[$roleName] = $file.FullName
+    }
+}
+
+# Register an API key
 function Register-ScaleApiKey {
     [CmdletBinding()]
     param (
@@ -138,12 +125,6 @@ function Register-ScaleApiKey {
     
     # Initialize environment
     Initialize-ScaleEnvironment
-    
-    # Make sure ApiKeys dictionary is initialized
-    if ($null -eq $script:ApiKeys) {
-        $script:ApiKeys = @{}
-        Write-ScaleLog -Message "Initialized ApiKeys dictionary" -Level 'Info'
-    }
     
     # Either use provided Role or prompt for it
     if ([string]::IsNullOrWhiteSpace($Role)) {
@@ -195,6 +176,7 @@ function Register-ScaleApiKey {
         Write-Error $errorMessage
     }
 }
+
 
 function Get-ScaleApiKey {
     [CmdletBinding()]
@@ -648,5 +630,5 @@ function Get-ScaleVMs {
 # Initialize module on import
 Initialize-ScaleEnvironment
 
-# Export module members
-Export-ModuleMember -Function Get-ScaleComputingClusters, Set-ScaleApiEndpoint, Register-ScaleApiKey, Get-ScaleAvailableApiKeys, Remove-ScaleApiKey
+# Export module members - now including all functions
+Export-ModuleMember -Function Get-ScaleComputingClusters, Set-ScaleApiEndpoint, Register-ScaleApiKey, Get-ScaleAvailableApiKeys, Remove-ScaleApiKey, Get-ScaleApiEndpoint, Get-ScaleVMs
