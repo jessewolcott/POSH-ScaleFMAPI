@@ -82,11 +82,19 @@ function Initialize-ScaleEnvironment {
     }
     
     # Create credentials folder if it doesn't exist
-    if (-not (Test-Path -Path $script:CredentialFolder)) {
-        New-Item -Path $script:CredentialFolder -ItemType Directory | Out-Null
-        Write-ScaleLog -Message "Created credentials directory: $($script:CredentialFolder)" -Level 'Info'
+    try {
+        if (-not (Test-Path -Path $script:CredentialFolder)) {
+            New-Item -Path $script:CredentialFolder -ItemType Directory -Force | Out-Null
+            Write-ScaleLog -Message "Created credentials directory: $($script:CredentialFolder)" -Level 'Info'
+        }
+    } catch {
+        Write-ScaleLog -Message "Failed to create credentials directory: $_" -Level 'Error'
+        # Create in home directory as fallback
+        $script:CredentialFolder = Join-Path -Path (Get-Item ~).FullName -ChildPath ".ScaleFM"
+        if (-not (Test-Path -Path $script:CredentialFolder)) {
+            New-Item -Path $script:CredentialFolder -ItemType Directory -Force | Out-Null
+        }
     }
-    
     # Create logs folder if it doesn't exist
     $logDirectory = Join-Path -Path $script:ModuleRoot -ChildPath "Logs"
     if (-not (Test-Path -Path $logDirectory)) {
@@ -115,6 +123,9 @@ function Register-ScaleApiKey {
         
         [Parameter(Mandatory = $false)]
         [string]$Role,
+
+        [Parameter(Mandatory = $false)]
+        [string]$EncryptionKeyFile,
         
         [Parameter(Mandatory = $false)]
         [bool]$EnableLogging = $false
@@ -145,7 +156,25 @@ function Register-ScaleApiKey {
     
     try {
         # Convert secure string to encrypted standard string
-        $encryptedKey = ConvertFrom-SecureString -SecureString $apiKeySecure
+        if ($PSVersionTable.PSEdition -eq 'Core' -and -not $IsWindows) {
+            # For non-Windows PS Core, we need a key file
+            if (-not $EncryptionKeyFile) {
+                $keyFilePath = Join-Path -Path $script:CredentialFolder -ChildPath "encryption.key"
+                if (-not (Test-Path -Path $keyFilePath)) {
+                    $keyBytes = New-Object byte[] 32
+                    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+                    $rng.GetBytes($keyBytes)
+                    $keyBytes | Set-Content -Path $keyFilePath -Encoding Byte
+                }
+                $EncryptionKeyFile = $keyFilePath
+            }
+            
+            $keyBytes = Get-Content -Path $EncryptionKeyFile -Encoding Byte -Raw
+            $encryptedKey = ConvertFrom-SecureString -SecureString $apiKeySecure -Key $keyBytes
+        } else {
+            # Windows can use DPAPI
+            $encryptedKey = ConvertFrom-SecureString -SecureString $apiKeySecure
+        }
         
         # Create credentials folder if it doesn't exist
         if (-not (Test-Path -Path $script:CredentialFolder)) {
@@ -206,11 +235,20 @@ function Get-ScaleApiKey {
         # Convert encrypted key to secure string
         $secureKey = ConvertTo-SecureString -String $encryptedKey
         
-        # Convert secure string to plain text for API use
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-        $apiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-        
+        # Convert secure string to plain text for API use in a version aware way
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            # PowerShell 7+ approach (cross-platform)
+            $apiKey = ConvertFrom-SecureString -SecureString $secureKey -AsPlainText
+        } else {
+            # PowerShell 5.1 approach
+            try {
+                $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+                $apiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+            } catch {
+                throw "This operation requires Windows PowerShell 5.1 or PowerShell 7+. Current version: $($PSVersionTable.PSVersion)"
+            }
+        }
         return $apiKey
     }
     catch {
@@ -349,21 +387,27 @@ function Remove-ScaleApiKey {
     }
     
     # Check if the credential file exists
-    if (Test-Path -Path $keyFile) {
-        # Remove the file
-        if ($Force -or $PSCmdlet.ShouldProcess($keyFile, "Delete credential file")) {
-            Remove-Item -Path $keyFile -Force
+# Check if the credential file exists
+if (Test-Path -Path $keyFile) {
+    # Remove the file
+    if ($Force -or $PSCmdlet.ShouldProcess($keyFile, "Delete credential file")) {
+        try {
+            Remove-Item -Path $keyFile -Force -ErrorAction Stop
             Write-ScaleLog -Message "Credential file for '$keyName' has been deleted." -Level 'Info'
+        } catch {
+            $errorMessage = "Failed to delete credential file: $_"
+            Write-ScaleLog -Message $errorMessage -Level 'Error'
+            Write-Error $errorMessage
         }
     }
-    
+}
     # Remove from the in-memory dictionary
     $script:ApiKeys.Remove($keyName)
     Write-ScaleLog -Message "API key '$keyName' has been removed from memory." -Level 'Info'
     Write-Host "API key '$keyName' has been removed successfully." -ForegroundColor Green
 }
 
-function Get-ScaleComputingClusters {
+function Get-ScaleClusters {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -394,9 +438,25 @@ function Get-ScaleComputingClusters {
             "api-key" = $apiKey
         }
         
-        Write-ScaleLog -Message "Requesting clusters data from: $clustersUrl" -Level 'Info'
-        $response = Invoke-RestMethod -Uri $clustersUrl -Headers $headers -Method Get
-        Write-ScaleLog -Message "Retrieved $(($response.items).Count) clusters successfully" -Level 'Info'
+        $maxRetries = 3
+        $retryCount = 0
+        $success = $false
+        
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                Write-ScaleLog -Message "Requesting clusters data from: $clustersUrl (Attempt $($retryCount+1))" -Level 'Info'
+                $response = Invoke-RestMethod -Uri $clustersUrl -Headers $headers -Method Get -TimeoutSec 30
+                $success = $true
+                Write-ScaleLog -Message "Retrieved $(($response.items).Count) clusters successfully" -Level 'Info'
+            } catch {
+                $retryCount++
+                if ($retryCount -ge $maxRetries) {
+                    throw "Failed after $maxRetries attempts: $_"
+                }
+                Write-ScaleLog -Message "Request failed (Attempt $retryCount of $maxRetries): $_" -Level 'Warning'
+                Start-Sleep -Seconds (2 * $retryCount) # Exponential backoff
+            }
+        }
         
         # Process the response to extract the needed information
         $results = foreach ($item in $response.items) {
@@ -519,9 +579,25 @@ function Get-ScaleVMs {
             "api-key" = $apiKey
         }
         
-        Write-ScaleLog -Message "Requesting VMs data from: $vmsUrl" -Level 'Info'
-        $response = Invoke-RestMethod -Uri $vmsUrl -Headers $headers -Method Get
-        Write-ScaleLog -Message "Retrieved $(($response.items).Count) VMs successfully" -Level 'Info'
+        $maxRetries = 3
+        $retryCount = 0
+        $success = $false
+
+    while (-not $success -and $retryCount -lt $maxRetries) {
+        try {
+            Write-ScaleLog -Message "Requesting VM data from: $vmsUrl (Attempt $($retryCount+1))" -Level 'Info'
+            $response = Invoke-RestMethod -Uri $vmsUrl -Headers $headers -Method Get -TimeoutSec 30
+            $success = $true
+            Write-ScaleLog -Message "Retrieved $(($response.items).Count) VMs successfully" -Level 'Info'
+        } catch {
+            $retryCount++
+            if ($retryCount -ge $maxRetries) {
+                throw "Failed after $maxRetries attempts: $_"
+            }
+            Write-ScaleLog -Message "Request failed (Attempt $retryCount of $maxRetries): $_" -Level 'Warning'
+            Start-Sleep -Seconds (2 * $retryCount) # Exponential backoff
+        }
+    }
         
         # Process the response to extract the needed information
         $results = foreach ($item in $response.items) {
@@ -531,15 +607,15 @@ function Get-ScaleVMs {
                 default { "Unknown" }
             }
             
-            $driveCapacityGB = [Math]::Round(($item.driveCapacity / 1024 / 1024 / 1024), 2)
-            $driveAllocationGB = [Math]::Round(($item.driveAllocation / 1024 / 1024 / 1024), 2)
-            $driveFreeSpaceGB = $driveCapacityGB - $driveAllocationGB
+            $driveCapacityGB = if ($item.driveCapacity -gt 0) { [Math]::Round(($item.driveCapacity / 1024 / 1024 / 1024), 2) } else { 0 }
+            $driveAllocationGB = if ($item.driveAllocation -gt 0) { [Math]::Round(($item.driveAllocation / 1024 / 1024 / 1024), 2) } else { 0 }
+            $driveFreeSpaceGB = [Math]::Max(0, $driveCapacityGB - $driveAllocationGB)
             $drivePercentage = if ($driveCapacityGB -gt 0) { 
-                ($driveAllocationGB / $driveCapacityGB) * 100
+                [Math]::Round(($driveAllocationGB / $driveCapacityGB) * 100, 2)
             } else { 
                 0 
             }
-            $ramGB = [Math]::Round(($item.memory / 1024 / 1024 / 1024), 2)
+            $ramGB = if ($item.memory -gt 0) { [Math]::Round(($item.memory / 1024 / 1024 / 1024), 2) } else { 0 }
             
             # Create VM object
             $vmObj = [PSCustomObject]@{
@@ -628,7 +704,13 @@ function Get-ScaleVMs {
     }
 }
 # Initialize module on import
-Initialize-ScaleEnvironment
+# Initialize module on import 
+try {
+    Initialize-ScaleEnvironment
+} catch {
+    Write-Warning "Module initialization encountered an issue: $_"
+    Write-Warning "Some functionality may be limited. Run Initialize-ScaleEnvironment manually with administrator privileges."
+}
 
 # Export module members - now including all functions
-Export-ModuleMember -Function Get-ScaleComputingClusters, Set-ScaleApiEndpoint, Register-ScaleApiKey, Get-ScaleAvailableApiKeys, Remove-ScaleApiKey, Get-ScaleApiEndpoint, Get-ScaleVMs
+Export-ModuleMember -Function Get-ScaleClusters, Set-ScaleApiEndpoint, Register-ScaleApiKey, Get-ScaleAvailableApiKeys, Remove-ScaleApiKey, Get-ScaleApiEndpoint, Get-ScaleVMs

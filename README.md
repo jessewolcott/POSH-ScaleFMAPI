@@ -152,11 +152,9 @@ Contributions to this module are welcome. Please ensure any modifications mainta
 
 # To-do 
 1. Document more use cases to expand into functions
-1. Add more error handling
 1. `Get-ScaleComputingClusters` has an update checker, but its not working because I need to figure out how to poll the API for latest available build. 
 1. Set-ScaleApiEndpoint needs to store the parameter in a permanent way
 1. Get-ScaleVMs handling and pagination is a little goofy. I don't love that.
 1. Does `/api/v2/organization-activities` work?
 1. Does `/api/v2/conditions` work?
 1. What the heck do we do with `/api/v2/metrics`?
-1. I hear that this whole thing doesn't work in PS7/Core/*nix/MacOS because of the way I'm hashing / storing the API Key. Must look into that, because I'd like to support that!
