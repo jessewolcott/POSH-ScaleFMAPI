@@ -11,7 +11,7 @@ $script:EnableLogging = $true
 $script:ApiKeys = @{}
 
 # Function to reliably determine script directory across PS versions and contexts
-function Get-ScaleModuleRoot {
+function Get-ScaleFMModuleRoot {
     [CmdletBinding()]
     param()
     
@@ -41,7 +41,7 @@ function Get-ScaleModuleRoot {
 }
 
 # Initialize paths using our safe directory detection function
-$script:ModuleRoot = Get-ScaleModuleRoot
+$script:ModuleRoot = Get-ScaleFMModuleRoot
 $script:CredentialFolder = Join-Path -Path $script:ModuleRoot -ChildPath "Credentials"
 
 function Write-ScaleLog {
@@ -78,7 +78,7 @@ function Initialize-ScaleEnvironment {
     
     # Ensure module root is set
     if (-not $script:ModuleRoot) {
-        $script:ModuleRoot = Get-ScaleModuleRoot
+        $script:ModuleRoot = Get-ScaleFMModuleRoot
     }
     
     # Create credentials folder if it doesn't exist
