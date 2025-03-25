@@ -1,0 +1,5 @@
+# Exclude a specific file
+scratchpad.ps1
+SCALEHCOSAPI.txt
+**/Credentials/
+**/Logs/
